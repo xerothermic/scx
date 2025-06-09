@@ -1599,7 +1599,7 @@ void BPF_STRUCT_OPS(layered_enqueue, struct task_struct *p, u64 enq_flags)
 	 * Also interlocked with opportunistic disabling in
 	 * try_drain_layer_llcs(). See there.
 	 */
-	if (!layer->nr_llc_cpus[llc_id])
+	if (!layer->nr_llc_cpus[llc_id]) {
 		layer_llc_drain_enable(layer, llc_id);
 
 	/*
@@ -1607,7 +1607,8 @@ void BPF_STRUCT_OPS(layered_enqueue, struct task_struct *p, u64 enq_flags)
 	 * set or they see @p queued in the DSQ. hi/lo_fb paths would need
 	 * something similar. Oh well...
 	 */
-	kick_idle_cpu(p, layer);
+        kick_idle_cpu(p, layer);
+    }
 }
 
 static void account_used(struct cpu_ctx *cpuc, struct task_ctx *taskc, u64 now)
@@ -2944,13 +2945,13 @@ void BPF_STRUCT_OPS(layered_update_idle, s32 cpu, bool idle)
 	 * Interlocked with kick_idle_cpu() in layered_enqueue(). Either they
 	 * see idle set or we see the task in one of the DSQs.
 	 */
-	llc_id = cpu_to_llc_id(cpu);
+	/*llc_id = cpu_to_llc_id(cpu);
 	bpf_for(layer_id, 0, nr_layers) {
 		if (scx_bpf_dsq_nr_queued(layer_dsq_id(layer_id, llc_id))) {
 			scx_bpf_kick_cpu(cpu, SCX_KICK_IDLE);
 			break;
 		}
-	}
+	}*/
 }
 
 void BPF_STRUCT_OPS(layered_cpu_release, s32 cpu,
