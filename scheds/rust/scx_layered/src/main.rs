@@ -1421,6 +1421,38 @@ impl Layer {
             }
         }
 
+        // Apply cpuset restriction if specified
+        if let Some(ref cpuset) = spec.cpuset {
+            allowed_cpus = cpuset.clone();
+        }
+
+        // Validate that cpuset has enough CPUs for cpus_range (for Confined/Grouped layers)
+        match &kind {
+            LayerKind::Confined {
+                cpus_range,
+                cpus_range_frac,
+                ..
+            }
+            | LayerKind::Grouped {
+                cpus_range,
+                cpus_range_frac,
+                ..
+            } => {
+                let cpus_range =
+                    resolve_cpus_pct_range(cpus_range, cpus_range_frac, topo.all_cpus.len())?;
+                let available_cpus = allowed_cpus.weight();
+                if available_cpus < cpus_range.0 {
+                    bail!(
+                        "Layer '{}': cpuset only allows {} CPUs but cpus_range requires at least {} CPUs",
+                        name,
+                        available_cpus,
+                        cpus_range.0
+                    );
+                }
+            }
+            _ => {}
+        }
+
         // Util can be above 1.0 for grouped layers if
         // util_includes_open_cputime is set.
         if let Some(util_range) = kind.util_range() {

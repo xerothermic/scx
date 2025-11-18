@@ -14,6 +14,41 @@ use crate::LayerGrowthAlgo;
 
 use scx_utils::Cpumask;
 
+mod cpumask_serde {
+    use super::*;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S>(cpumask: &Option<Cpumask>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match cpumask {
+            Some(mask) => serializer.serialize_some(&format!("{:x}", mask)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Cpumask>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: Option<String> = Option::deserialize(deserializer)?;
+        match s {
+            Some(s) => {
+                // Try parsing as hex/special value first
+                Cpumask::from_str(&s)
+                    .or_else(|_| {
+                        // Fall back to CPU list format
+                        Cpumask::from_cpulist(&s)
+                    })
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
+            }
+            None => Ok(None),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct LayerConfig {
@@ -23,7 +58,7 @@ pub struct LayerConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LayerSpec {
     pub name: String,
-    #[serde(skip)]
+    #[serde(default, with = "cpumask_serde")]
     pub cpuset: Option<Cpumask>,
     pub comment: Option<String>,
     pub template: Option<LayerMatch>,
@@ -236,5 +271,203 @@ impl LayerKind {
             } => *util_includes_open_cputime,
             _ => false,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpumask_deserialize_hex() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "0xff",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.cpuset.is_some());
+        let mask = spec.cpuset.as_ref().unwrap();
+
+        // 0xff should have CPUs 0-7 set
+        for i in 0..8 {
+            assert!(mask.test_cpu(i), "CPU {} should be set", i);
+        }
+        for i in 8..16 {
+            assert!(!mask.test_cpu(i), "CPU {} should not be set", i);
+        }
+    }
+
+    #[test]
+    fn test_cpumask_deserialize_cpulist() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "0-3,5,7",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.cpuset.is_some());
+        let mask = spec.cpuset.as_ref().unwrap();
+
+        // Should have CPUs 0, 1, 2, 3, 5, 7 set
+        assert!(mask.test_cpu(0));
+        assert!(mask.test_cpu(1));
+        assert!(mask.test_cpu(2));
+        assert!(mask.test_cpu(3));
+        assert!(!mask.test_cpu(4));
+        assert!(mask.test_cpu(5));
+        assert!(!mask.test_cpu(6));
+        assert!(mask.test_cpu(7));
+    }
+
+    #[test]
+    fn test_cpumask_deserialize_none() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "none",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.cpuset.is_some());
+        let mask = spec.cpuset.as_ref().unwrap();
+        assert!(mask.is_empty());
+    }
+
+    #[test]
+    fn test_cpumask_deserialize_all() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "all",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.cpuset.is_some());
+        let mask = spec.cpuset.as_ref().unwrap();
+        assert!(mask.is_full());
+    }
+
+    #[test]
+    fn test_cpumask_deserialize_omitted() {
+        let json = r#"{
+            "name": "test",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.cpuset.is_none());
+    }
+
+    #[test]
+    fn test_cpumask_serialize_deserialize_roundtrip() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "0-7,16-23",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        let serialized = serde_json::to_string(&spec).unwrap();
+        let deserialized: LayerSpec = serde_json::from_str(&serialized).unwrap();
+
+        assert_eq!(spec.cpuset.is_some(), deserialized.cpuset.is_some());
+        if let (Some(original), Some(roundtrip)) = (&spec.cpuset, &deserialized.cpuset) {
+            // Check that all CPUs have the same state in both masks
+            for i in 0..original.len() {
+                assert_eq!(
+                    original.test_cpu(i),
+                    roundtrip.test_cpu(i),
+                    "CPU {} differs after roundtrip",
+                    i
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_cpumask_deserialize_invalid() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "invalid-cpuset-format!!!",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let result: Result<LayerSpec, _> = serde_json::from_str(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cpumask_parsing_2_3() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "2-3",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.cpuset.is_some());
+        let mask = spec.cpuset.as_ref().unwrap();
+
+        // Should have CPUs 2, 3 set
+        assert!(!mask.test_cpu(0), "CPU 0 should not be set");
+        assert!(!mask.test_cpu(1), "CPU 1 should not be set");
+        assert!(mask.test_cpu(2), "CPU 2 should be set");
+        assert!(mask.test_cpu(3), "CPU 3 should be set");
+        assert!(!mask.test_cpu(4), "CPU 4 should not be set");
+        assert_eq!(mask.weight(), 2, "Should have exactly 2 CPUs set");
+    }
+
+    #[test]
+    fn test_cpumask_parsing_0xf0() {
+        let json = r#"{
+            "name": "test",
+            "cpuset": "0xf0",
+            "matches": [[]],
+            "kind": {
+                "Open": {}
+            }
+        }"#;
+
+        let spec: LayerSpec = serde_json::from_str(json).unwrap();
+        assert!(spec.cpuset.is_some());
+        let mask = spec.cpuset.as_ref().unwrap();
+
+        // 0xf0 = 11110000 in binary, should have CPUs 4,5,6,7 set
+        assert!(!mask.test_cpu(0), "CPU 0 should not be set");
+        assert!(!mask.test_cpu(1), "CPU 1 should not be set");
+        assert!(!mask.test_cpu(2), "CPU 2 should not be set");
+        assert!(!mask.test_cpu(3), "CPU 3 should not be set");
+        assert!(mask.test_cpu(4), "CPU 4 should be set");
+        assert!(mask.test_cpu(5), "CPU 5 should be set");
+        assert!(mask.test_cpu(6), "CPU 6 should be set");
+        assert!(mask.test_cpu(7), "CPU 7 should be set");
+        assert_eq!(mask.weight(), 4, "Should have exactly 4 CPUs set");
     }
 }

@@ -26,6 +26,7 @@ use scx_utils::NR_CPUS_POSSIBLE;
 use scx_utils::NR_CPU_IDS;
 use std::sync::Arc;
 use tracing::info;
+use tracing::trace;
 
 const MAX_CPUS: usize = bpf_intf::consts_MAX_CPUS as usize;
 
@@ -113,6 +114,8 @@ impl CpuPool {
     ) -> Option<&Cpumask> {
         let available_cpus = self.available_cpus().and(allowed_cpus);
         let available_cores = self.cpus_to_cores(&available_cpus).ok()?;
+
+        trace!("allowed_cpus:{} available_cpus:{} available_cores:{}", allowed_cpus, available_cpus, available_cores);
 
         for alloc_core in core_alloc_order {
             match available_cores.get(*alloc_core) {
