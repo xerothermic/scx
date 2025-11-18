@@ -1,0 +1,48 @@
+[
+  {
+    "name": "core 2-3",
+    "comment": "Layer that uses cpu 2-3",
+    "cpuset": "2-3",
+    "matches": [
+      [
+        {
+          "CommPrefix": "dummy"
+        }
+      ]
+    ],
+    "kind": {
+      "Confined": {
+        "util_range": [0.2, 0.8],
+        "cpus_range": [2, 2]
+      }
+    }
+  },
+  {
+    "name": "core 0xf0",
+    "comment": "Layer that pinned to CPUs using hex format (0xf0 = CPUs 4-7)",
+    "cpuset": "0xf0",
+    "matches": [
+      [
+        {
+          "CommPrefix": "dummy2"
+        }
+      ]
+    ],
+    "kind": {
+      "Grouped": {
+        "util_range": [0.2, 0.8],
+        "cpus_range": [4, 4]
+      }
+    }
+  },
+  {
+    "name": "catch all",
+    "comment": "Catch-all for remaining tasks",
+    "matches": [
+      []
+    ],
+    "kind": {
+      "Open": {}
+    }
+  }
+]
