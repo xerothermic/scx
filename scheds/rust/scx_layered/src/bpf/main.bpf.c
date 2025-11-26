@@ -743,7 +743,7 @@ int save_gpu_tgid_pid(void) {
 	struct task_ctx *taskc, *parent;
 	u64 pid_tgid;
 	u32 pid, tid;
-	u64 timestamp = 0;
+	u64 timestamp = bpf_ktime_get_ns();
 
 	pid_tgid = bpf_get_current_pid_tgid();
 	pid = pid_tgid >> 32;
@@ -764,8 +764,6 @@ int save_gpu_tgid_pid(void) {
 			 */
 			if (taskc->recheck_layer_membership == MEMBER_EXPIRED)
 				taskc->refresh_layer = true;
-
-			timestamp = taskc->running_at;
 		}
 
 		/* Same logic for the parent. */
