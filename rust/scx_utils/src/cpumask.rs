@@ -276,6 +276,37 @@ impl Cpumask {
         }
     }
 
+    /// Format the Cpumask as a CPU list string suitable for writing to
+    /// smp_affinity_list (e.g. "0-3,5,7").
+    pub fn to_cpulist(&self) -> String {
+        let cpus: Vec<usize> = self.iter().collect();
+        if cpus.is_empty() {
+            return String::new();
+        }
+        let mut ranges = Vec::new();
+        let mut start = cpus[0];
+        let mut end = cpus[0];
+        for &cpu in &cpus[1..] {
+            if cpu == end + 1 {
+                end = cpu;
+            } else {
+                if start == end {
+                    ranges.push(format!("{start}"));
+                } else {
+                    ranges.push(format!("{start}-{end}"));
+                }
+                start = cpu;
+                end = cpu;
+            }
+        }
+        if start == end {
+            ranges.push(format!("{start}"));
+        } else {
+            ranges.push(format!("{start}-{end}"));
+        }
+        ranges.join(",")
+    }
+
     /// Write out a CPU mask to a raw memory pointer. We normally use this as part of updating
     /// the CPU masks on the BPF side.
     ///

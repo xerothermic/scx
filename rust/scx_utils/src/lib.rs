@@ -95,6 +95,7 @@ pub use misc::try_set_rlimit_infinity;
 
 mod netdev;
 pub use netdev::read_netdevs;
+pub use netdev::write_netdev_irq_restore_script;
 pub use netdev::NetDev;
 
 pub mod pm;

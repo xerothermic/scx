@@ -15,6 +15,7 @@ use std::mem::MaybeUninit;
 use std::ops::Sub;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -56,6 +57,7 @@ use scx_utils::libbpf_clap_opts::LibbpfOpts;
 use scx_utils::perf;
 use scx_utils::pm::{cpu_idle_resume_latency_supported, update_cpu_idle_resume_latency};
 use scx_utils::read_netdevs;
+use scx_utils::write_netdev_irq_restore_script;
 use scx_utils::scx_enums;
 use scx_utils::scx_ops_attach;
 use scx_utils::scx_ops_load;
@@ -81,6 +83,7 @@ use tracing_subscriber::filter::EnvFilter;
 use walkdir::WalkDir;
 
 const SCHEDULER_NAME: &str = "scx_layered";
+const NETDEV_IRQ_RESTORE_SCRIPT: &str = "/run/scx_layered_netdev_irq_restore.sh";
 const MAX_PATH: usize = bpf_intf::consts_MAX_PATH as usize;
 const MAX_COMM: usize = bpf_intf::consts_MAX_COMM as usize;
 const MAX_LAYER_WEIGHT: u32 = bpf_intf::consts_MAX_LAYER_WEIGHT;
@@ -2354,9 +2357,26 @@ impl<'a> Scheduler<'a> {
 
         let netdevs = if opts.netdev_irq_balance {
             warn!(
-                "Experimental netdev IRQ balancing enabled. Reset IRQ masks of network devices after use!!!"
+                "Experimental netdev IRQ balancing enabled. \
+                 Original IRQ affinity will be restored on exit. \
+                 Emergency restore script: {NETDEV_IRQ_RESTORE_SCRIPT}"
             );
-            read_netdevs()?
+            let devs = read_netdevs()?;
+            write_netdev_irq_restore_script(&devs, Path::new(NETDEV_IRQ_RESTORE_SCRIPT))?;
+            let total_irqs: usize = devs.values().map(|d| d.irqs.len()).sum();
+            let breakdown = devs
+                .iter()
+                .map(|(iface, d)| format!("{iface}={}", d.irqs.len()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            info!(
+                "Overriding {total_irqs} IRQ{} across {} interface{} [{breakdown}]; \
+                 restore script: {NETDEV_IRQ_RESTORE_SCRIPT}",
+                if total_irqs == 1 { "" } else { "s" },
+                devs.len(),
+                if devs.len() == 1 { "" } else { "s" },
+            );
+            devs
         } else {
             BTreeMap::new()
         };
@@ -2779,6 +2799,11 @@ impl<'a> Scheduler<'a> {
                 trace!("{} updating irq {} cpumask {:?}", iface, irq, irqmask);
             }
             netdev.apply_cpumasks()?;
+            debug!(
+                "{iface}: applied affinity override to {} IRQ{}",
+                netdev.irqs.len(),
+                if netdev.irqs.len() == 1 { "" } else { "s" },
+            );
         }
 
         Ok(())
@@ -3883,6 +3908,29 @@ impl<'a> Scheduler<'a> {
 impl Drop for Scheduler<'_> {
     fn drop(&mut self) {
         info!("Unregister {SCHEDULER_NAME} scheduler");
+
+        if !self.netdevs.is_empty() {
+            match Command::new("sh").arg(NETDEV_IRQ_RESTORE_SCRIPT).status() {
+                Ok(status) if status.success() => {
+                    info!("Restored original netdev IRQ affinity via {NETDEV_IRQ_RESTORE_SCRIPT}");
+                    if let Err(e) = fs::remove_file(NETDEV_IRQ_RESTORE_SCRIPT) {
+                        warn!("Failed to remove IRQ restore script: {e}");
+                    }
+                }
+                Ok(status) => {
+                    warn!(
+                        "IRQ restore script exited with {status}; \
+                         manually run: sh {NETDEV_IRQ_RESTORE_SCRIPT}"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        "Failed to run IRQ restore script: {e}; \
+                         manually run: sh {NETDEV_IRQ_RESTORE_SCRIPT}"
+                    );
+                }
+            }
+        }
 
         if let Some(struct_ops) = self.struct_ops.take() {
             drop(struct_ops);
